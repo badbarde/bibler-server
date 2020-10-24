@@ -2,15 +2,15 @@ import json
 import logging
 import os
 from datetime import datetime
-from unittest.mock import patch
 
 import bibler.biblerAPI as biblerAPI
 import pandas as pd
 import pytest
-from bibler.biblerAPI import Book, User, bibler
+from bibler.biblerAPI import Session, bibler
 from bibler.dataclasses.BorrowingUser import BorrowingUser
 from dateutil.relativedelta import relativedelta
 from fastapi.testclient import TestClient
+from requests.sessions import session
 from starlette import responses
 
 
@@ -20,84 +20,81 @@ def uut():
     return TestClient(bibler)
 
 
-def create_book_test_data(tmpdir):
-    with open(os.path.join(tmpdir, Book.__name__ + ".json"), "w") as f:
-        json.dump([
-            {
-                "key": 0,
-                "title": "Sabriel",
-                "author": "Garth Nix",
-                "publisher": "Carlsen",
-                "number": 1,
-                "shorthand": "Car",
-                "category": "Fantasy",
-                "isbn": "3-551-58128-2",
-            }
-        ], f)
+def create_book_test_data(session):
+    data = [
+        {
+            "key": 0,
+            "title": "Sabriel",
+            "author": "Garth Nix",
+            "publisher": "Carlsen",
+            "number": 1,
+            "shorthand": "Car",
+            "category": "Fantasy",
+            "isbn": "3-551-58128-2",
+        }
+    ]
 
 
-def create_books_test_data(tmpdir):
-    with open(os.path.join(tmpdir, Book.__name__ + ".json"), "w") as f:
-        json.dump([
-            {
-                "key": 0,
-                "title": "Sabriel",
-                "author": "Garth Nix",
-                "publisher": "Carlsen",
-                "number": 1,
-                "shorthand": "Car",
-                "category": "Fantasy",
-                "isbn": "3-551-58128-2",
-            },
-            {
-                "key": 1,
-                "title": "Die granulare Gesellschaft",
-                "author": "Christoph Kucklick",
-                "publisher": "Ullstein",
-                "number": 2,
-                "shorthand": "Ull",
-                "category": "Sachbuch",
-                "isbn": "978-3-548-37625-7",
-            }
-        ], f)
+def create_books_test_data(session):
+    data = [
+        {
+            "key": 0,
+            "title": "Sabriel",
+            "author": "Garth Nix",
+            "publisher": "Carlsen",
+            "number": 1,
+            "shorthand": "Car",
+            "category": "Fantasy",
+            "isbn": "3-551-58128-2",
+        },
+        {
+            "key": 1,
+            "title": "Die granulare Gesellschaft",
+            "author": "Christoph Kucklick",
+            "publisher": "Ullstein",
+            "number": 2,
+            "shorthand": "Ull",
+            "category": "Sachbuch",
+            "isbn": "978-3-548-37625-7",
+        }
+    ]
 
 
-def create_user_test_data(tmpdir):
-    with open(os.path.join(tmpdir, User.__name__ + ".json"), "w") as f:
-        json.dump([
-            {
-                "key": 0,
-                "firstname": "Lukas",
-                "lastname": "Schmidt",
-                "clazz": "5c"
-            }
-        ], f)
+def create_user_test_data(session):
+    data = [
+        {
+            "key": 0,
+            "firstname": "Lukas",
+            "lastname": "Schmidt",
+            "classname": "5c"
+        }
+    ]
 
 
-def create_users_test_data(tmpdir):
-    with open(os.path.join(tmpdir, User.__name__ + ".json"), "w") as f:
-        json.dump([
-            {
-                "key": 0,
-                "firstname": "Lukas",
-                "lastname": "Schmidt",
-                "clazz": "5c"
-            },
-            {
-                "key": 1,
-                "firstname": "Alice",
-                "lastname": "Schmidt",
-                "clazz": "lehrer*in"
-            }
-        ], f)
+def create_users_test_data(session):
+    data = [
+        {
+            "key": 0,
+            "firstname": "Lukas",
+            "lastname": "Schmidt",
+            "classname": "5c"
+        },
+        {
+            "key": 1,
+            "firstname": "Alice",
+            "lastname": "Schmidt",
+            "classname": "lehrer*in"
+        }
+    ]
 
 
 def test_get_user(uut: TestClient, tmpdir, caplog):
     """test getting a user if only one exists"""
     # given
     caplog.set_level(logging.INFO)
-    biblerAPI.save_path = tmpdir
-    create_user_test_data(tmpdir)
+    session = Session()
+    create_user_test_data(session)
+    session.commit()
     # when
     users = uut.get("/users")
     # then
@@ -107,7 +104,7 @@ def test_get_user(uut: TestClient, tmpdir, caplog):
             "key": 0,
             "firstname": "Lukas",
             "lastname": "Schmidt",
-            "clazz": "5c"
+            "classname": "5c"
         }
     ]
 
@@ -127,13 +124,13 @@ def test_get_users(uut: TestClient, tmpdir, caplog):
             "key": 0,
             "firstname": "Lukas",
             "lastname": "Schmidt",
-            "clazz": "5c"
+            "classname": "5c"
         },
         {
             "key": 1,
             "firstname": "Alice",
             "lastname": "Schmidt",
-            "clazz": "lehrer*in"
+            "classname": "lehrer*in"
         }
     ]
 
@@ -149,7 +146,7 @@ def test_put_user(uut: TestClient, tmpdir, caplog):
         "key": 1,
         "firstname": "Alice",
         "lastname": "Schmidt",
-        "clazz": "lehrer*in"
+        "classname": "lehrer*in"
     })
     # then
     assert users.json() == {"status": "user created"}
@@ -167,7 +164,7 @@ def test_put_user_twice(uut: TestClient, tmpdir, caplog):
         "key": 0,
         "firstname": "Lukas",
         "lastname": "Schmidt",
-        "clazz": "5c"
+        "classname": "5c"
     })
     # then
     assert users.json() == {"status": "user created"}

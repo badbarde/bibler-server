@@ -1,0 +1,43 @@
+# TODOS
+
+## Mandatory
+
+ - [ ] Check that borrowing and all books return the correct books
+ - [ ] Fix Key errors with React
+ - [ ] User Randalf disappeared from user menu after returning his borrowed book
+ - [ ] Returning a book makes the button grayed out saying its borrowed
+
+## Nice to have
+
+ - [ ] Verschiedene Rechte für Lehrer*innen und Schüler*innen
+   - Lehrer*innen können  für andere Bücher ausleihen
+   - Schüler*innen können nur für sich Bücher ausleihen
+ - [ ] Als User Rezensionen erstellen können
+
+# DONE
+
+ - [X] Verlängern der Ausleih Periode
+ - [X] Fristen sicht nach Rückgabe frist sortieren
+   - Überfällige Bücher / User highlighten
+   - Stats Wert im footer der überfälligen Bücher anzeigen
+ - [X] User select in borrow modal alphabetisch sortieren
+ - [X] Spalte mit anz ausgeliehener Bücher pro User anzeigen
+ - [X] Anzahl der Spalten in Fristen sicht aus das nötigste reduzieren
+ - [X] Schlüssel Spalte ausblenden
+ - [X] State des table/card toggle ist falsch wenn man folgende macht:
+   - toggle cards
+   - select book
+   - click the borrow menu
+   - Table view shows but toggle button is wrong
+ - [X] Filter Funktion der User im Ausleih Dialog
+ - [X] Ausgeliehene Bücher in der Ausleihliste richtig anzeigen
+ - [X] Vollständige integration einer Datenbank für Transactional savety
+ - [X] Farbkodierung erstellen für Kategorien:
+   - blau: Bilderbuch
+   - gelb: Erstleser
+   - rot: Fortgeschrittene
+   - grün: Sachbücher
+   - schwarz: Krimi
+ - [X] Ein Buch mit der selben person 2x ausleihen und wieder zurückgeben
+ - [X] In Fristen Ansicht bereits zurückgegebene Bücher ausblenden
+ - [X] Text der Modal buttons updaten

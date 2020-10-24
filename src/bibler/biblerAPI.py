@@ -5,28 +5,32 @@ GET    Read                 200 (OK), list of customers. Use pagination, sorting
 PUT    Update/Replace       405 (Method Not Allowed), unless you want to update/replace every resource in the entire collection. 	200 (OK) or 204 (No Content). 404 (Not Found), if ID not found or invalid.
 PATCH  Update/Modify        405 (Method Not Allowed), unless you want to modify the collection itself. 	                            200 (OK) or 204 (No Content). 404 (Not Found), if ID not found or invalid.
 DELETE Delete               405 (Method Not Allowed), unless you want to delete the whole collection—not often desirable. 	        200 (OK). 404 (Not Found), if ID not found or invalid."""
+import csv
 import io
 import logging
-import math
 import os
-import pprint as pp
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
+import sqlalchemy
 from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.params import Query
-from pandas.errors import EmptyDataError
-from pydantic import BaseModel
-from sqlalchemy import create_engine
-from starlette.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.sql import functions
+from starlette.responses import FileResponse, StreamingResponse
 
-from .dataclasses.Book import Book
-from .dataclasses.BorrowingUser import BorrowingUser
-from .dataclasses.User import User
+from .dataclasses.Book import Book, BookTable
+from .dataclasses.BorrowingUser import BorrowingUser, BorrowingUserTable
+from .dataclasses.Category import Category, CategoryTable
+from .dataclasses.model import Base
+from .dataclasses.User import User, UserIn, UserTable
 from .responses.BorrowResponse import BorrowResponseModel, BorrowResponseStatus
+from .responses.ExtendingResponse import (ExtendingResponseModel,
+                                          ExtendingResponseStatus)
 from .responses.ImportBooksResponse import ImportBooksResponseStatus
 from .responses.PutBookResponse import (PutBookResponseModel,
                                         PutBookResponseStatus)
@@ -34,24 +38,27 @@ from .responses.PutUserResponse import (PutUserResponseModel,
                                         PutUserResponseStatus)
 from .responses.ReturningResponse import (ReturningResponseModel,
                                           ReturningResponseStatus)
-from .testdata.TestData import create_books_test_data, create_users_test_data
+from .testdata.TestData import (create_books_test_data, create_categories_data,
+                                create_overdue_borrowed_book,
+                                create_users_test_data)
 
-engine = create_engine('sqlite:///data/bibler.db', echo=True)
+DB_PREFIX = "sqlite:///"
+DB_URL = "data/bibler.db"
+if os.path.exists(DB_URL):
+    os.remove(DB_URL)
+engine = sqlalchemy.create_engine(
+    f"{DB_PREFIX}{DB_URL}",
+    echo=True,
+    connect_args={"check_same_thread": False}
+)
+Session = sessionmaker(bind=engine)
+Base.metadata.create_all(engine)
 
 logger = logging.getLogger("BiblerAPI")
 logger.setLevel(logging.INFO)
 # create console handler and set level to debug
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
-
-# create formatter
-# formatter = logging.Formatter(
-# '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# add formatter to ch
-# ch.setFormatter(formatter)
-
-# add ch to logger
 logger.addHandler(ch)
 
 save_path = "data/"
@@ -70,213 +77,218 @@ bibler.add_middleware(
     allow_headers=["*"],
 )
 
+bibler.mount(
+    "/static",
+    StaticFiles(directory="../bibler-client/build/"),
+    name="static"
+)
+
 
 @bibler.on_event("startup")
 async def startup_event():
-    create_users_test_data(save_path)
-    create_books_test_data(save_path)
-    with open("data/Bücherliste.csv") as f:
-        await __import_csv_file(f)
-    with open("data/Bücherliste2.csv") as f:
-        await __import_csv_file(f)
+    session = Session()
+    create_users_test_data(session)
+    session.commit()
+    session = Session()
+    create_categories_data(session)
+    session.commit()
+    session = Session()
+    create_overdue_borrowed_book(session)
+    session.commit()
+    await __import_books_csv("data/Bücherliste.csv")
+    # with open("data/Bücherliste2.csv") as f:
+    #   await import_books_csv(f)
 
-
-def __load_data_class(data_class):
-    """load a Dataframe of a Dataclass from disc"""
-    path = os.path.join(save_path, data_class.__name__ + file_ending)
-    if os.path.exists(path):
-        try:
-            logger.info(f"loading [{data_class.__name__}] from '{path}'")
-            df = pd.read_json(path)
-            return df
-        except EmptyDataError as e:
-            logger.error(f"{data_class.__name__} data is empty '{path}': {e}")
-        except ValueError as e:
-            logger.error(f"{data_class.__name__} data is empty '{path}': {e}")
-    logger.error(f"cant load {data_class.__name__} from '{path}'")
-    df = pd.DataFrame(columns=data_class.__fields__)
-    df.to_sql(data_class.__name__, con=engine, if_exists="replace")
-    df.to_json(path)
-    return df
-
-
-async def __put_data(data: BaseModel):
-    """save data of a given base class to a dataframe and then to disc
-    TODO: smarter save mechanism for nested stuctures
-    """
-    df = __load_data_class(data.__class__)
-    if all([v for k, v in data.__dict__.items() if k != "key"]):
-        return 0
-    logger.info(f"add {data.__class__.__name__}: {await __data_class_to_dict(data)}")
-    insert = pd.json_normalize(await __data_class_to_dict(data))
-    if "key" in insert.keys():
-        insert["key"] = df.key.max() + 1
-    logger.info(f"put data {insert}")
-    new_df = df.append(insert, ignore_index=True)
-    new_df.to_sql(data.__class__.__name__, con=engine, if_exists="replace")
-    new_df.to_json(os.path.join(
-        save_path, data.__class__.__name__ + file_ending))
-    return 1
-
-
-async def __data_class_to_dict(data: BaseModel):
-    """"""
-    ret = {}
-    for k, v in data.__dict__.items():
-        val = v
-        if isinstance(v, BaseModel):
-            val = await __data_class_to_dict(v)
-        if isinstance(v, list):
-            val = [await __data_class_to_dict(i) for i in v]
-        ret[k] = val
-    return ret
+    await borrow_book(1, 1)
+    await borrow_book(1, 5)
 
 
 @bibler.get("/users")
 async def get_users():
-    """get users"""
-    users = __load_data_class(User)
-    borrowing_user = __load_data_class(BorrowingUser)
-    user_book_count = borrowing_user.groupby(
-        ["user_key"]).count()
-    # TODO: add sum of borrowed books to user output
-    logger.info(f"group by user: {user_book_count}")
-    if users is not None:
-        return users.fillna("").to_dict(orient="records")
+    session: Session = Session()
+    ret = session.query(
+        UserTable,
+        functions.coalesce(functions.count(
+            BorrowingUserTable.key), 0).label("borrowed_books")
+    ).outerjoin(BorrowingUserTable).filter(
+        BorrowingUserTable.return_date == None
+    ).group_by(UserTable).order_by(
+        UserTable.lastname,
+        UserTable.firstname,
+        UserTable.classname
+    ).all()
+    logger.info(ret)
+    return ret
 
 
 @bibler.put("/user", response_model=PutUserResponseModel)
-async def put_user(user: User):
-    if (await __put_data(user)) == 0:
-        return {"status": PutUserResponseStatus.fail}
+async def put_user(user: UserIn):
+    session = Session()
+    session.add(UserTable(user))
+    session.commit()
     return {"status": PutUserResponseStatus.success}
 
 
 @bibler.get("/books")
 async def get_books(user_key: Optional[int] = None):
-    """get books"""
-    books = __load_data_class(Book)
+    session = Session()
+    ret = session.query(BookTable)
     if user_key is not None:
-        logger.info(f"filtering books for user: {user_key}")
-        borrowing_user = __load_data_class(BorrowingUser)
-        books = books[
-            books.key.isin(
-                borrowing_user[(borrowing_user.user_key == user_key)
-                               & (borrowing_user.return_date.isna())].book_key)
-        ]
-        return books.fillna("").to_dict(orient="records")
-    if books is not None:
-        return books.fillna("").to_dict(orient="records")
+        ret = ret.join(BorrowingUserTable).filter(
+            BorrowingUserTable.user_key == user_key
+        ).filter(
+            BorrowingUserTable.return_date == None
+        )
+    return ret.all()
+
+
+@bibler.get("/books/available")
+async def get_available_books():
+    session = Session()
+    ret = session.query(BookTable).filter(
+        ~BookTable.key.in_(
+            session.query(BorrowingUserTable.book_key).filter(
+                BorrowingUserTable.return_date != None
+            ))
+    ).all()
+    return ret
 
 
 @bibler.put("/book", response_model=PutBookResponseModel)
-async def put_book(book: Book):
-    if(await __put_data(book)) == 0:
-        return {"status": PutBookResponseStatus.fail}
+async def db_put_book(book: Book):
+    session = Session()
+    ret = session.add(BookTable(book))
+    session.commit()
     return {"status": PutBookResponseStatus.success}
 
 
 @bibler.patch("/borrow/{user_key}/{book_key}", response_model=BorrowResponseModel)
 async def borrow_book(user_key: int, book_key: int, duration: int = 3):
-    """borrow a book with the key `book_key` to the user with the key `user_key`"""
-    users = __load_data_class(User)
-    books = __load_data_class(Book)
-    borrowing_user = __load_data_class(BorrowingUser)
-    logger.info(f"BORROWING USERS:\n {borrowing_user.head()}")
-    if user_key not in users.key.values:
+    session = Session()
+    if session.query(UserTable).filter(UserTable.key == user_key).first() is None:
         logger.error(f"User with key:{user_key} does not exist")
         return {"status": BorrowResponseStatus.user_unknown}
-    if book_key not in books.key.values:
+    if session.query(BookTable).filter(BookTable.key == book_key).first() is None:
         logger.error(f"Book with key:{book_key} does not exist")
         return {"status": BorrowResponseStatus.book_unknown}
-    if book_key in borrowing_user[borrowing_user.return_date.isnull()].book_key.values:
+    if session.query(BorrowingUserTable).filter(
+        BorrowingUserTable.book_key == book_key
+    ).filter(
+            BorrowingUserTable.return_date != None
+    ).first() is not None:
         logger.error(f"Book is already borrowed")
         return {"status": BorrowResponseStatus.already_borrowed}
-    max_key = 0 if math.isnan(
-        borrowing_user.key.max()
-    ) else borrowing_user.key.max()
-    new_record = BorrowingUser(
-        key=max_key + 1,
-        user_key=user_key,
+    current_date = datetime.now()
+    expiration_date = (
+        current_date + relativedelta(weeks=duration)).date()
+    session.add(BorrowingUserTable(BorrowingUser(
+        key=-1,
         book_key=book_key,
-        start_date=datetime.now().date().strftime(dateformat),
-        expiration_date=(
-            datetime.now() + relativedelta(weeks=duration)).date().strftime(dateformat),
+        user_key=user_key,
+        start_date=current_date.date(),
+        expiration_date=expiration_date,
         return_date=None
-    )
-    logger.info(f"new record: {new_record.__dict__}")
-
-    borrowing_user = borrowing_user.append(
-        await __data_class_to_dict(new_record), ignore_index=True)
-    borrowing_user.to_json(os.path.join(
-        save_path,  BorrowingUser.__name__ + file_ending))
-    logger.info(borrowing_user.head())
+    )))
+    session.commit()
+    logger.info(
+        f"user: {user_key} is borrowing {book_key} at {current_date} until {expiration_date}")
     return {
         "status": BorrowResponseStatus.success,
-        "return_date": new_record.expiration_date
+        "return_date": expiration_date
     }
 
 
 @bibler.patch("/return/{user_key}/{book_key}", response_model=ReturningResponseModel)
 async def return_book(user_key: int, book_key: int):
-    """return a book with the key `book_key` borrowed by the user with the key `user_key`"""
-    users = __load_data_class(User)
-    books = __load_data_class(Book)
-    borrowing_user = __load_data_class(BorrowingUser)
-    if user_key not in users.key.values:
+    """return a book with the key `book_key` as the user with the key `user_key`"""
+    session = Session()
+    if session.query(UserTable).filter(UserTable.key == user_key).first() is None:
         logger.error(f"User with key:{user_key} does not exist")
         return {"status": ReturningResponseStatus.user_unknown}
-    if book_key not in books.key.values:
+    if session.query(BookTable).filter(BookTable.key == book_key).first() is None:
         logger.error(f"Book with key:{book_key} does not exist")
         return {"status": ReturningResponseStatus.book_unknown}
-    if book_key not in borrowing_user.book_key.values:
+    if session.query(BorrowingUserTable).filter(
+        BorrowingUserTable.book_key == book_key
+    ).filter(
+        BorrowingUserTable.return_date == None
+    ).first() is None:
         logger.error(f"Book is not lend to anyone")
         return {"status": ReturningResponseStatus.book_not_borrowed}
-    if book_key not in borrowing_user[(borrowing_user.user_key == user_key) & (borrowing_user.return_date.isnull())].book_key.values:
+    return_record = session.query(BorrowingUserTable).filter(
+        BorrowingUserTable.book_key == book_key
+    ).filter(
+        BorrowingUserTable.user_key == user_key
+    ).filter(
+        BorrowingUserTable.return_date == None
+    ).first()
+    if return_record is None:
         logger.error(
             f"Book with id '{book_key}' is not lend to user with id '{user_key}''")
         return {"status": ReturningResponseStatus.book_not_borrowed}
-    retrun_date = datetime.now().date().strftime(dateformat)
-    borrowing_user.at[
-        (borrowing_user.user_key == user_key) &
-        (borrowing_user.book_key == book_key), "return_date"
-    ] = retrun_date
-    logger.info(
-        f"User with key {user_key} sucessfully returned the book with the key {book_key}")
-    borrowing_user.to_json(os.path.join(
-        save_path, BorrowingUser.__name__ + file_ending))
+    return_record.return_date = datetime.now().date()
+    session.commit()
     return {"status": ReturningResponseStatus.success}
 
 
-@bibler.get("/borrow/users")
+@bibler.patch("/extend/{user_key}/{book_key}", response_model=ExtendingResponseModel)
+async def extend_borrow_period(user_key: int, book_key: int, duration: int = 1):
+    """extend the borrowing period for a a book with the key `book_key` for the user with the key `user_key`"""
+    session = Session()
+    if session.query(UserTable).filter(UserTable.key == user_key).first() is None:
+        logger.error(f"User with key:{user_key} does not exist")
+        return {"status": ExtendingResponseStatus.user_unknown}
+    if session.query(BookTable).filter(BookTable.key == book_key).first() is None:
+        logger.error(f"Book with key:{book_key} does not exist")
+        return {"status": ExtendingResponseStatus.book_unknown}
+    if session.query(BorrowingUserTable).filter(
+        BorrowingUserTable.book_key == book_key
+    ).filter(
+        BorrowingUserTable.return_date == None
+    ).first() is None:
+        logger.error(f"Book is not lend to anyone")
+        return {"status": ExtendingResponseStatus.book_not_borrowed}
+    extend_record = session.query(BorrowingUserTable).filter(
+        BorrowingUserTable.book_key == book_key
+    ).filter(
+        BorrowingUserTable.user_key == user_key
+    ).filter(
+        BorrowingUserTable.return_date == None
+    ).first()
+    if extend_record is None:
+        logger.error(
+            f"Book with id '{book_key}' is not lend to user with id '{user_key}''")
+        return {"status": ExtendingResponseStatus.book_not_borrowed}
+    new_expiration_date = (extend_record.expiration_date +
+                           relativedelta(weeks=duration))
+    if (extend_record.start_date + relativedelta(weeks=5)) < new_expiration_date:
+        logger.info(f"Book can't be extended to loger than 5 weeks")
+        return {"status": ExtendingResponseStatus.limit_exceeded}
+    extend_record.expiration_date = new_expiration_date
+    session.commit()
+    return {"status": ExtendingResponseStatus.success, "return_date": new_expiration_date}
+
+
+@bibler.get("/users/borrowing")
 async def get_borrowing_users():
-    """returns all users that are currenty borrowing a book and the books they are borrowing"""
-    users = __load_data_class(User)
-    books = __load_data_class(Book)
-    borrowing_user = __load_data_class(BorrowingUser)
-    ret = borrowing_user.set_index("user_key").join(
-        users.set_index("key")
-    ).set_index("book_key").join(books.set_index("key"))
-    #user_recs = users.to_dict(orient="records")
-    #borrowing_user_recs = []
-    # for user in user_recs:
-    #    books_keys = borrowing_user[borrowing_user.user_key == user.get(
-    #        "key")].book_key
-    #    borrowed_books = books[books.key.isin(
-    #        books_keys)]
-    #    user["borrowed_books"] = borrowed_books.to_dict(orient="records")
-    #    borrowing_user_recs += [user]
-    # return borrowing_user_recs
-    return ret.fillna("").to_dict(orient="records")
+    session = Session()
+    ret = session.query(BorrowingUserTable, BookTable, UserTable).join(
+        BookTable
+    ).join(
+        UserTable
+    ).filter(
+        BorrowingUserTable.return_date == None
+    ).order_by(BorrowingUserTable.expiration_date).all()
+    return ret
 
 
-@bibler.post("/files/")
-async def create_file(file: bytes = File(...)):
-    return {"file_size": len(file)}
+@bibler.get("/media/exists/{book_key}", response_model=bool)
+async def get_book_cover(book_key: int):
+    return os.path.exists(os.path.join("data/media", str(book_key) + ".png"))
 
 
 @bibler.get("/media/{book_key}")
-async def create_file(book_key: int):
+async def get_book_cover_exists(book_key: int):
     path = os.path.join("data/media", str(book_key) + ".png")
     logger.info(f"loading {path}")
     if os.path.exists(path):
@@ -284,37 +296,178 @@ async def create_file(book_key: int):
             return StreamingResponse(io.BytesIO(f.read()), media_type="image/png")
 
 
-@bibler.post("/import/csv/")
-async def import_csv(file: UploadFile = File(...)):
+@bibler.get("/books/export/csv/", response_class=FileResponse)
+async def export_books_csv():
+    """export `Book`s to csv file"""
+    session = Session()
+    books = session.query(
+        BookTable.title,
+        BookTable.author,
+        BookTable.publisher,
+        BookTable.shorthand,
+        BookTable.number,
+        BookTable.category,
+        BookTable.isbn,
+    ).all()
+    f = io.StringIO()
+    csv_f = csv.writer(f)
+    csv_f.writerow(
+        [
+            "title",
+            "author",
+            "publisher",
+            "shorthand",
+            "number",
+            "category",
+            "isbn",
+        ]
+    )
+    csv_f.writerows(books)
+    return StreamingResponse(io.StringIO(f.getvalue()), media_type="text/csv")
+
+
+@bibler.get("/users/export/csv/", response_class=FileResponse)
+async def export_books_csv():
+    """export `Users`s to csv file"""
+    session = Session()
+    books = session.query(
+        UserTable.firstname,
+        UserTable.lastname,
+        UserTable.classname,
+    ).all()
+    f = io.StringIO()
+    csv_f = csv.writer(f)
+    csv_f.writerow(
+        [
+            "firstname",
+            "lastname",
+            "classname",
+        ]
+    )
+    csv_f.writerows(books)
+    return StreamingResponse(io.StringIO(f.getvalue()), media_type="text/csv")
+
+
+@bibler.post("/users/import/csv/")
+async def import_user_csv(file: UploadFile = File(...)):
+    """import `Users`s from csv file"""
+    session = Session()
+    df: pd.DataFrame = pd.read_csv(file.file).replace({np.nan: None})
+    logger.info(f"importing csv with columns:  {df.columns}")
+    logger.info(f"shape:  {df.shape}")
+    df = df[
+        (~df.title.isnull())
+        & (~df.author.isnull())
+        & (~df.publisher.isnull())
+        & (~df.number.isnull())
+        & (~df.shorthand.isnull())
+        & (~df.category.isnull())
+    ].drop_duplicates(subset=["number"])
+    logger.info(f"duplicate remove shape:  {df.shape}")
+    records = [UserTable(User(key=-1, **i))
+               for i in df.to_dict(orient="records")]
+    session.add_all(records)
+    session.commit()
+    return {"status": ImportBooksResponseStatus.success, "import_count": len(df.index)}
+
+
+async def __import_books_csv(file):
     """import `Book`s from csv file"""
-    return await __import_csv_file(file.file)
+    session = Session()
+    df: pd.DataFrame = pd.read_csv(file).replace({np.nan: None})
+    logger.info(f"importing csv with columns:  {df.columns}")
+    logger.info(f"shape:  {df.shape}")
+    df = df[
+        (~df.title.isnull())
+        & (~df.author.isnull())
+        & (~df.publisher.isnull())
+        & (~df.number.isnull())
+        & (~df.shorthand.isnull())
+        & (~df.category.isnull())
+    ].drop_duplicates(subset=["number"])
+    logger.info(f"duplicate remove shape:  {df.shape}")
+    records = [BookTable(Book(key=-1, **i))
+               for i in df.to_dict(orient="records")]
+    session.add_all(records)
+    session.commit()
+    return {"status": ImportBooksResponseStatus.success, "import_count": len(df.index)}
 
 
-async def __import_csv_file(file):
-    """private import for csv files"""
-    df: pd.DataFrame = pd.read_csv(file)
-    logger.info(f"loadled file: {df.head()}")
-    books = __load_data_class(Book).dropna(how="all")
-    logger.info(f"columns of new data: {set(df.columns)}")
-    logger.info(f"columns of existing data: {set(books.columns)}")
-    if set(df.columns).issubset(set(books.columns)):
-        maxkey = books.key.max()
-        df["key"] = pd.Series(range(maxkey + 1, maxkey + len(df.index) + 1))
-        books = pd.concat([books, df], ignore_index=True)
-        books.to_sql(Book.__name__, con=engine, if_exists="replace")
-        books.to_json(
-            os.path.join(save_path, Book.__name__ + file_ending),
-            index=True,
-        )
-        return {"status": ImportBooksResponseStatus.success, "import_count": len(df.index)}
-    return {"status": ImportBooksResponseStatus.fail}
+@bibler.post("/books/import/csv/")
+async def import_books_csv(file: UploadFile = File(...)):
+    """import `Book`s from csv file"""
+    session = Session()
+    df: pd.DataFrame = pd.read_csv(file.file).replace({np.nan: None})
+    logger.info(f"importing csv with columns:  {df.columns}")
+    logger.info(f"shape:  {df.shape}")
+    df = df[
+        (~df.title.isnull())
+        & (~df.author.isnull())
+        & (~df.publisher.isnull())
+        & (~df.number.isnull())
+        & (~df.shorthand.isnull())
+        & (~df.category.isnull())
+    ].drop_duplicates(subset=["number"])
+    logger.info(f"duplicate remove shape:  {df.shape}")
+    records = [BookTable(Book(key=-1, **i))
+               for i in df.to_dict(orient="records")]
+    session.add_all(records)
+    session.commit()
+    return {"status": ImportBooksResponseStatus.success, "import_count": len(df.index)}
 
 
-def __record_exists(base_model: BaseModel):
-    """check if a record is already in a dataframe"""
-    data = __load_data_class(base_model.__class__)
-    for col, val in __data_class_to_dict(base_model):
-        if val not in data[col]:
-            return False
-    else:
+@bibler.get("/book/borrowed/{book_key}")
+async def is_borrowed(book_key: int):
+    """check weather a book with the key `book_key` is currently borrowed by anyone"""
+    session = Session()
+    borrowed_state = session.query(BorrowingUserTable).filter(
+        BorrowingUserTable.book_key == book_key,
+        BorrowingUserTable.return_date == None
+    ).first()
+    logger.info(f"borrowed state: {borrowed_state}")
+    if borrowed_state is not None:
         return True
+    return False
+
+
+@bibler.get("/category", response_model=List[Category])
+async def get_category():
+    """"""
+    session = Session()
+    return [Category(**(i.__dict__)) for i in session.query(CategoryTable).all()]
+
+
+@bibler.get("/stats/books/borrowed")
+async def get_borrowed_count():
+    """returns the number of currently borrowed books"""
+    session = Session()
+    count = session.query(functions.count(BorrowingUserTable.key)).filter(
+        BorrowingUserTable.return_date == None
+    ).all()
+    return count[0][0]
+
+
+@bibler.get("/stats/books/overdue")
+async def get_overdue_count():
+    """returns the number of books that are overdue"""
+    session = Session()
+    count = session.query(functions.count(BorrowingUserTable.key)).filter(
+        BorrowingUserTable.expiration_date < datetime.now().date()
+    ).all()
+    return count[0][0]
+
+
+@bibler.get("/stats/books/count")
+async def get_books_count():
+    """return number of books"""
+    session = Session()
+    count = session.query(functions.count(BookTable.key)).all()
+    return count[0][0]
+
+
+@bibler.get("/stats/users/count")
+async def get_books_count():
+    """return number of users"""
+    session = Session()
+    count = session.query(functions.count(UserTable.key)).all()
+    return count[0][0]

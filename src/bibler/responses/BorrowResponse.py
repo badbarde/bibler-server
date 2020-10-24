@@ -1,3 +1,4 @@
+from datetime import date
 from enum import Enum
 from typing import Optional
 
@@ -10,10 +11,10 @@ class BorrowResponseStatus(Enum):
     already_borrowed = "already borrowed"
     user_unknown = "user unknown"
     book_unknown = "user unknown"
-    limmit_exceeded = "maximum number ob books already borrowed"
+    limit_exceeded = "maximum number ob books already borrowed"
 
 
 class BorrowResponseModel(BaseModel):
     """Response model for borrowing a book"""
     status: BorrowResponseStatus
-    return_date: Optional[str]
+    return_date: Optional[date]

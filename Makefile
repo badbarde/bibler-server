@@ -1,4 +1,4 @@
-start: test
+start: 
 	uvicorn src.bibler.biblerAPI:bibler --reload
 
 activate:
