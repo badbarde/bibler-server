@@ -108,6 +108,25 @@ def create_users_test_data(session):
             "lastname": "Ravenclaw",
             "classname": "3a"
 
+        },
+        {
+            "key": 0,
+            "firstname": "Mete",
+            "lastname": "Viktorson",
+            "classname": "5c"
+        },
+        {
+            "key": 1,
+            "firstname": "Sarah",
+            "lastname": "Bach",
+            "classname": "4e"
+        },
+        {
+            "key": 2,
+            "firstname": "Jenniffer",
+            "lastname": "Hahn",
+            "classname": "3c"
+
         }
     ]
     session.add_all([UserTable(User(**i)) for i in data])

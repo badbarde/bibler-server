@@ -2,10 +2,11 @@
 
 ## Mandatory
 
- - [ ] Check that borrowing and all books return the correct books
  - [ ] Fix Key errors with React
- - [ ] User Randalf disappeared from user menu after returning his borrowed book
  - [ ] Returning a book makes the button grayed out saying its borrowed
+ - [ ] In der "alle bücher" ansicht kann man auf ausgeliehene bücher 
+       klicken und der ausleihen button ist nicht ausgegraut
+
 
 ## Nice to have
 
@@ -16,6 +17,8 @@
 
 # DONE
 
+ - [X] User Randalf disappeared from user menu after returning his borrowed book
+ - [X] Check that borrowing and all books return the correct books
  - [X] Verlängern der Ausleih Periode
  - [X] Fristen sicht nach Rückgabe frist sortieren
    - Überfällige Bücher / User highlighten

@@ -100,19 +100,33 @@ async def startup_event():
     #   await import_books_csv(f)
 
     await borrow_book(1, 1)
+    await borrow_book(2, 2)
+    await borrow_book(2, 3)
+    await borrow_book(2, 4)
     await borrow_book(1, 5)
 
 
 @bibler.get("/users")
 async def get_users():
     session: Session = Session()
+    count_table = session.query(
+        BorrowingUserTable.user_key,
+        functions.count(
+            BorrowingUserTable.key).label("borrowed_books")
+    ).filter(
+        BorrowingUserTable.return_date == None
+    ).group_by(
+        BorrowingUserTable.user_key
+    ).subquery()
     ret = session.query(
         UserTable,
-        functions.coalesce(functions.count(
-            BorrowingUserTable.key), 0).label("borrowed_books")
-    ).outerjoin(BorrowingUserTable).filter(
-        BorrowingUserTable.return_date == None
-    ).group_by(UserTable).order_by(
+        functions.coalesce(
+            count_table.c.borrowed_books, 0
+        ).label("borrowed_books")
+    ).outerjoin(
+        count_table,
+        UserTable.key == count_table.c.user_key
+    ).order_by(
         UserTable.lastname,
         UserTable.firstname,
         UserTable.classname
@@ -148,8 +162,9 @@ async def get_available_books():
     ret = session.query(BookTable).filter(
         ~BookTable.key.in_(
             session.query(BorrowingUserTable.book_key).filter(
-                BorrowingUserTable.return_date != None
-            ))
+                BorrowingUserTable.return_date == None
+            ).subquery()
+        )
     ).all()
     return ret
 

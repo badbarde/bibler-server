@@ -27,7 +27,7 @@ class UserTable(Base):
 
     __tablename__ = "users"
     key = sqlalchemy.Column(sqlalchemy.Integer,
-                            primary_key=True, autoincrement="auto")
+                            primary_key=True)
     firstname = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     lastname = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     classname = sqlalchemy.Column(sqlalchemy.String)
