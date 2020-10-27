@@ -5,6 +5,7 @@ GET    Read                 200 (OK), list of customers. Use pagination, sorting
 PUT    Update/Replace       405 (Method Not Allowed), unless you want to update/replace every resource in the entire collection. 	200 (OK) or 204 (No Content). 404 (Not Found), if ID not found or invalid.
 PATCH  Update/Modify        405 (Method Not Allowed), unless you want to modify the collection itself. 	                            200 (OK) or 204 (No Content). 404 (Not Found), if ID not found or invalid.
 DELETE Delete               405 (Method Not Allowed), unless you want to delete the whole collection—not often desirable. 	        200 (OK). 404 (Not Found), if ID not found or invalid."""
+import configparser
 import csv
 import io
 import logging
@@ -19,9 +20,11 @@ from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic.types import confloat
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import functions
-from starlette.responses import FileResponse, StreamingResponse
+from starlette.responses import (FileResponse, RedirectResponse,
+                                 StreamingResponse)
 
 from .dataclasses.Book import Book, BookTable
 from .dataclasses.BorrowingUser import BorrowingUser, BorrowingUserTable
@@ -42,9 +45,17 @@ from .testdata.TestData import (create_books_test_data, create_categories_data,
                                 create_overdue_borrowed_book,
                                 create_users_test_data)
 
+logger = logging.getLogger("Bibler-server")
+logger.setLevel(logging.INFO)
+
+config = configparser.ConfigParser()
+config.read("bibler.ini")
+default_conf = config["DEFAULT"]
+logger.info(f"{[i for i in default_conf]}")
 DB_PREFIX = "sqlite:///"
 DB_URL = "data/bibler.db"
-if os.path.exists(DB_URL):
+if os.path.exists(DB_URL) and config["DEFAULT"]["production"] == "false":
+    logger.warn("Removing existing database")
     os.remove(DB_URL)
 engine = sqlalchemy.create_engine(
     f"{DB_PREFIX}{DB_URL}",
@@ -54,12 +65,7 @@ engine = sqlalchemy.create_engine(
 Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 
-logger = logging.getLogger("BiblerAPI")
-logger.setLevel(logging.INFO)
 # create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-logger.addHandler(ch)
 
 save_path = "data/"
 file_ending = ".json"
@@ -86,6 +92,8 @@ bibler.mount(
 
 @bibler.on_event("startup")
 async def startup_event():
+    if config["DEFAULT"]["production"] == "true":
+        return
     session = Session()
     create_users_test_data(session)
     session.commit()
@@ -96,8 +104,7 @@ async def startup_event():
     create_overdue_borrowed_book(session)
     session.commit()
     await __import_books_csv("data/Bücherliste.csv")
-    # with open("data/Bücherliste2.csv") as f:
-    #   await import_books_csv(f)
+    await __import_books_csv("data/Bücherliste2.csv")
 
     await borrow_book(1, 1)
     await borrow_book(2, 2)
@@ -137,9 +144,12 @@ async def get_users():
 
 @bibler.put("/user", response_model=PutUserResponseModel)
 async def put_user(user: UserIn):
-    session = Session()
-    session.add(UserTable(user))
-    session.commit()
+    try:
+        session = Session()
+        session.add(UserTable(user))
+        session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return {"status": PutUserResponseStatus.fail}
     return {"status": PutUserResponseStatus.success}
 
 
@@ -171,9 +181,12 @@ async def get_available_books():
 
 @bibler.put("/book", response_model=PutBookResponseModel)
 async def db_put_book(book: Book):
-    session = Session()
-    ret = session.add(BookTable(book))
-    session.commit()
+    try:
+        session = Session()
+        ret = session.add(BookTable(book))
+        session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return {"status": PutBookResponseStatus.fail}
     return {"status": PutBookResponseStatus.success}
 
 
@@ -189,7 +202,7 @@ async def borrow_book(user_key: int, book_key: int, duration: int = 3):
     if session.query(BorrowingUserTable).filter(
         BorrowingUserTable.book_key == book_key
     ).filter(
-            BorrowingUserTable.return_date != None
+            BorrowingUserTable.return_date == None
     ).first() is not None:
         logger.error(f"Book is already borrowed")
         return {"status": BorrowResponseStatus.already_borrowed}
@@ -204,9 +217,9 @@ async def borrow_book(user_key: int, book_key: int, duration: int = 3):
         expiration_date=expiration_date,
         return_date=None
     )))
-    session.commit()
     logger.info(
         f"user: {user_key} is borrowing {book_key} at {current_date} until {expiration_date}")
+    session.commit()
     return {
         "status": BorrowResponseStatus.success,
         "return_date": expiration_date
@@ -272,7 +285,7 @@ async def extend_borrow_period(user_key: int, book_key: int, duration: int = 1):
     ).first()
     if extend_record is None:
         logger.error(
-            f"Book with id '{book_key}' is not lend to user with id '{user_key}''")
+            f"Book with id '{book_key}' is not lend to user with id '{user_key}'")
         return {"status": ExtendingResponseStatus.book_not_borrowed}
     new_expiration_date = (extend_record.expiration_date +
                            relativedelta(weeks=duration))
@@ -287,23 +300,60 @@ async def extend_borrow_period(user_key: int, book_key: int, duration: int = 1):
 @bibler.get("/users/borrowing")
 async def get_borrowing_users():
     session = Session()
-    ret = session.query(BorrowingUserTable, BookTable, UserTable).join(
+    ret = session.query(
+        BorrowingUserTable.key,
+        BorrowingUserTable.book_key,
+        BorrowingUserTable.user_key,
+        BorrowingUserTable.return_date,
+        BorrowingUserTable.expiration_date,
+        BorrowingUserTable.start_date,
+        BookTable.title,
+        BookTable.author,
+        BookTable.category,
+        BookTable.isbn,
+        BookTable.number,
+        BookTable.shorthand,
+        UserTable.firstname,
+        UserTable.lastname,
+        UserTable.classname,
+    ).join(
         BookTable
     ).join(
         UserTable
     ).filter(
         BorrowingUserTable.return_date == None
     ).order_by(BorrowingUserTable.expiration_date).all()
-    return ret
+    return [
+        {
+            "key": i[0],
+            "book_key": i[1],
+            "user_key": i[2],
+            "return_date": i[3],
+            "expiration_date": i[4],
+            "start_date": i[5],
+            "title": i[6],
+            "author": i[7],
+            "category": i[8],
+            "isbn": i[9],
+            "number": i[10],
+            "shorthand": i[11],
+            "firstname": i[12],
+            "lastname": i[13],
+            "classname": i[14],
+        }
+        for i in ret
+    ]
 
 
-@bibler.get("/media/exists/{book_key}", response_model=bool)
-async def get_book_cover(book_key: int):
-    return os.path.exists(os.path.join("data/media", str(book_key) + ".png"))
+@bibler.get("/media/exists/{book_key}", response_model=str)
+async def book_cover_existes(book_key: int):
+    if os.path.exists(os.path.join("data/media", str(book_key) + ".png")):
+        return "True"
+    return "False"
 
 
 @bibler.get("/media/{book_key}")
-async def get_book_cover_exists(book_key: int):
+async def get_book_cover(book_key: int):
     path = os.path.join("data/media", str(book_key) + ".png")
     logger.info(f"loading {path}")
     if os.path.exists(path):
@@ -431,7 +481,7 @@ async def import_books_csv(file: UploadFile = File(...)):
     return {"status": ImportBooksResponseStatus.success, "import_count": len(df.index)}
 
 
-@bibler.get("/book/borrowed/{book_key}")
+@bibler.get("/book/borrowed/{book_key}", response_model=str)
 async def is_borrowed(book_key: int):
     """check weather a book with the key `book_key` is currently borrowed by anyone"""
     session = Session()
@@ -441,8 +491,8 @@ async def is_borrowed(book_key: int):
     ).first()
     logger.info(f"borrowed state: {borrowed_state}")
     if borrowed_state is not None:
-        return True
-    return False
+        return "True"
+    return "False"
 
 
 @bibler.get("/category", response_model=List[Category])
@@ -486,3 +536,8 @@ async def get_books_count():
     session = Session()
     count = session.query(functions.count(UserTable.key)).all()
     return count[0][0]
+
+
+@bibler.get("/")
+async def index():
+    return RedirectResponse("static/index.html")
