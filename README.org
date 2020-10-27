@@ -2,11 +2,14 @@
 
 ## Mandatory
 
+ - [ ] Fix Key errors with React
+ - [ ] Returning a book makes the button grayed out saying its borrowed
+ - [ ] In der "alle bücher" ansicht kann man auf ausgeliehene bücher 
+       klicken und der ausleihen button ist nicht ausgegraut
 
 
 ## Nice to have
- - [ ] Validation for Book input and User input
- - [ ] Websocked connection for live updates of the state values
+
  - [ ] Verschiedene Rechte für Lehrer*innen und Schüler*innen
    - Lehrer*innen können  für andere Bücher ausleihen
    - Schüler*innen können nur für sich Bücher ausleihen
@@ -14,10 +17,6 @@
 
 # DONE
 
- - [X] Fix Key errors with React
- - [X] In der "alle bücher" ansicht kann man auf ausgeliehene bücher 
-       klicken und der ausleihen button ist nicht ausgegraut
- - [X] Returning a book makes the button grayed out saying its borrowed
  - [X] User Randalf disappeared from user menu after returning his borrowed book
  - [X] Check that borrowing and all books return the correct books
  - [X] Verlängern der Ausleih Periode
