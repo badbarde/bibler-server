@@ -4,4 +4,6 @@ BIBlerServer/
 **/data/**
 htmlcov/
 .vscode/
+dist/**
+build/**
 *.db
