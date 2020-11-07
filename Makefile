@@ -13,3 +13,7 @@ coverage-report: coverage
 coverage-html: coverage
 	coverage html
 	firefox htmlcov/index.html
+sync:
+	rsync . /media/barde/Intensio\ Externe/Bibler/bibler-server -r
+reqirements:
+	pip freeze > requirements.txt

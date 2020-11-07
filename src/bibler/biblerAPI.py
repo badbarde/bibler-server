@@ -16,11 +16,11 @@ from typing import Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import sqlalchemy
+from bs4 import UnicodeDammit
 from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic.types import confloat
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import functions
 from starlette.responses import (FileResponse, RedirectResponse,
@@ -31,10 +31,20 @@ from .dataclasses.BorrowingUser import BorrowingUser, BorrowingUserTable
 from .dataclasses.Category import Category, CategoryTable
 from .dataclasses.model import Base
 from .dataclasses.User import User, UserIn, UserTable
+from .responses import PatchBookResponse
+from .responses.BorrowingUsersResponse import BorrowingUserRecord
 from .responses.BorrowResponse import BorrowResponseModel, BorrowResponseStatus
+from .responses.DeleteBookResponse import (DeleteBookResponseModel,
+                                           DeleteBookResponseStatus)
+from .responses.DeleteUserResponse import (DeleteUserResponseModel,
+                                           DeleteUserResponseStatus)
 from .responses.ExtendingResponse import (ExtendingResponseModel,
                                           ExtendingResponseStatus)
 from .responses.ImportBooksResponse import ImportBooksResponseStatus
+from .responses.PatchBookResponse import (PatchBookResponseModel,
+                                          PatchBookResponseStatus)
+from .responses.PatchUserResponse import (PatchUserResponseModel,
+                                          PatchUserResponseStatus)
 from .responses.PutBookResponse import (PutBookResponseModel,
                                         PutBookResponseStatus)
 from .responses.PutUserResponse import (PutUserResponseModel,
@@ -85,7 +95,7 @@ bibler.add_middleware(
 
 bibler.mount(
     "/static",
-    StaticFiles(directory="../bibler-client/build/"),
+    StaticFiles(directory="static/"),
     name="static"
 )
 
@@ -105,6 +115,7 @@ async def startup_event():
     session.commit()
     await __import_books_csv("data/Bücherliste.csv")
     await __import_books_csv("data/Bücherliste2.csv")
+    await __import_user_csv("data/Userliste.csv")
 
     await borrow_book(1, 1)
     await borrow_book(2, 2)
@@ -115,6 +126,7 @@ async def startup_event():
 
 @bibler.get("/users")
 async def get_users():
+    """returns a list of users and the amount of books that they have borrowed"""
     session: Session = Session()
     count_table = session.query(
         BorrowingUserTable.user_key,
@@ -144,6 +156,7 @@ async def get_users():
 
 @bibler.put("/user", response_model=PutUserResponseModel)
 async def put_user(user: UserIn):
+    """inserts a new user `user` into the list of existing users"""
     try:
         session = Session()
         session.add(UserTable(user))
@@ -153,8 +166,48 @@ async def put_user(user: UserIn):
     return {"status": PutUserResponseStatus.success}
 
 
+@bibler.patch("/user", response_model=PatchUserResponseModel)
+async def patch_user(user: User):
+    """update a `user` in the list of users"""
+    try:
+        session = Session()
+        selected_user = session.query(
+            UserTable
+        ).filter(
+            UserTable.key == user.key
+        ).first()
+        selected_user.firstname = user.firstname
+        selected_user.lastname = user.lastname
+        selected_user.classname = user.classname
+        session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return {"status": PatchUserResponseStatus.fail}
+    return {"status": PatchUserResponseStatus.success}
+
+
+@bibler.delete("/user/{user_key}", response_model=DeleteUserResponseModel)
+async def delete_user(user_key: int):
+    """delete a `user` in the list of users"""
+    try:
+        session = Session()
+        if session.query(BorrowingUserTable).filter(
+            BorrowingUserTable.return_date != None,
+            BorrowingUserTable.user_key == user_key
+        ).first() is not None:
+            return {"status": DeleteUserResponseStatus.borrowing}
+        selected_user = session.query(UserTable).filter(
+            UserTable.key == user_key).first()
+        session.delete(selected_user)
+        session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return {"status": DeleteUserResponseStatus.fail}
+    return {"status": DeleteUserResponseStatus.success}
+
+
 @bibler.get("/books")
 async def get_books(user_key: Optional[int] = None):
+    """returns a list of all books or if `user_key` is specified all 
+    books borrowed by the user with the key `user_key`"""
     session = Session()
     ret = session.query(BookTable)
     if user_key is not None:
@@ -168,6 +221,7 @@ async def get_books(user_key: Optional[int] = None):
 
 @bibler.get("/books/available")
 async def get_available_books():
+    """returns a list of all availabled books that are not borrowed by anyone"""
     session = Session()
     ret = session.query(BookTable).filter(
         ~BookTable.key.in_(
@@ -180,7 +234,8 @@ async def get_available_books():
 
 
 @bibler.put("/book", response_model=PutBookResponseModel)
-async def db_put_book(book: Book):
+async def put_book(book: Book):
+    """inserts a new `book` into the list of existing books"""
     try:
         session = Session()
         ret = session.add(BookTable(book))
@@ -190,8 +245,50 @@ async def db_put_book(book: Book):
     return {"status": PutBookResponseStatus.success}
 
 
+@bibler.patch("/book", response_model=PatchBookResponseModel)
+async def patch_book(book: Book):
+    """Updates an existing `book` in the list of existing books"""
+    try:
+        session = Session()
+        selected_book = session.query(BookTable.key == book.key)
+        selected_book.title = book.title
+        selected_book.author = book.author
+        selected_book.category = book.category
+        selected_book.shorthand = book.shorthand
+        selected_book.number = book.number
+        selected_book.publisher = book.publisher
+        selected_book.isbn = book.isbn
+        session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return {"status": PatchBookResponseStatus.fail}
+    return {"status": PatchBookResponseStatus.success}
+
+
+@bibler.delete("/book/{book_key}", response_model=DeleteBookResponseModel)
+async def patch_book(book_key: int):
+    """Delete an existing book with the key `book_key` in the list of existing books"""
+    try:
+        session = Session()
+        if session.query(BorrowingUserTable).filter(
+            BorrowingUserTable.return_date != None,
+            BorrowingUserTable.book_key == book_key
+        ).first() is not None:
+            return {"status": DeleteBookResponseStatus.borrowed}
+        selected_book = session.query(
+            BookTable
+        ).filter(
+            BookTable.key == book_key
+        )
+        session.delete(selected_book)
+        session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return {"status": DeleteBookResponseStatus.fail}
+    return {"status": DeleteBookResponseStatus.success}
+
+
 @bibler.patch("/borrow/{user_key}/{book_key}", response_model=BorrowResponseModel)
 async def borrow_book(user_key: int, book_key: int, duration: int = 3):
+    """borrow a book with the key `book_key` for the user `user_key`"""
     session = Session()
     if session.query(UserTable).filter(UserTable.key == user_key).first() is None:
         logger.error(f"User with key:{user_key} does not exist")
@@ -297,8 +394,9 @@ async def extend_borrow_period(user_key: int, book_key: int, duration: int = 1):
     return {"status": ExtendingResponseStatus.success, "return_date": new_expiration_date}
 
 
-@bibler.get("/users/borrowing")
+@bibler.get("/users/borrowing", response_model=List[BorrowingUserRecord])
 async def get_borrowing_users():
+    """returns a list of all Books together with the user that borrows it"""
     session = Session()
     ret = session.query(
         BorrowingUserTable.key,
@@ -347,6 +445,7 @@ async def get_borrowing_users():
 
 @bibler.get("/media/exists/{book_key}", response_model=str)
 async def book_cover_existes(book_key: int):
+    """returns if a book with the key `book_key` exists"""
     if os.path.exists(os.path.join("data/media", str(book_key) + ".png")):
         return "True"
     return "False"
@@ -354,6 +453,7 @@ async def book_cover_existes(book_key: int):
 
 @bibler.get("/media/{book_key}")
 async def get_book_cover(book_key: int):
+    """returns the book cover of a book with the key `book_key`"""
     path = os.path.join("data/media", str(book_key) + ".png")
     logger.info(f"loading {path}")
     if os.path.exists(path):
@@ -388,7 +488,13 @@ async def export_books_csv():
         ]
     )
     csv_f.writerows(books)
-    return StreamingResponse(io.StringIO(f.getvalue()), media_type="text/csv")
+    today = datetime.now().strftime("%d.%m.%Y")
+    return StreamingResponse(
+        io.BytesIO(f.getvalue().encode("iso-8859-1")),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=Benutzerliste {today}.csv"}
+    )
 
 
 @bibler.get("/users/export/csv/", response_class=FileResponse)
@@ -410,25 +516,47 @@ async def export_books_csv():
         ]
     )
     csv_f.writerows(books)
-    return StreamingResponse(io.StringIO(f.getvalue()), media_type="text/csv")
+    today = datetime.now().strftime("%d.%m.%Y")
+    return StreamingResponse(
+        io.BytesIO(f.getvalue().encode("iso-8859-1")),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=Benutzerliste {today}.csv", }
+    )
+
+
+async def __import_user_csv(file):
+    """import `Users`s from csv file"""
+    session = Session()
+    df: pd.DataFrame = pd.read_csv(file).replace({np.nan: None})
+    logger.info(f"importing csv with columns:  {df.columns}")
+    logger.info(f"shape:  {df.shape}")
+    df = df[
+        (~df.firstname.isnull())
+        & (~df.lastname.isnull())
+        & (~df.classname.isnull())
+    ]
+    records = [UserTable(User(key=-1, **i))
+               for i in df.to_dict(orient="records")]
+    session.add_all(records)
+    session.commit()
+    return {"status": ImportBooksResponseStatus.success, "import_count": len(df.index)}
 
 
 @bibler.post("/users/import/csv/")
 async def import_user_csv(file: UploadFile = File(...)):
     """import `Users`s from csv file"""
     session = Session()
-    df: pd.DataFrame = pd.read_csv(file.file).replace({np.nan: None})
+    df: pd.DataFrame = pd.read_csv(
+        io.StringIO(UnicodeDammit(file.file.read()).unicode_markup)
+    ).replace({np.nan: None})
     logger.info(f"importing csv with columns:  {df.columns}")
     logger.info(f"shape:  {df.shape}")
     df = df[
-        (~df.title.isnull())
-        & (~df.author.isnull())
-        & (~df.publisher.isnull())
-        & (~df.number.isnull())
-        & (~df.shorthand.isnull())
-        & (~df.category.isnull())
-    ].drop_duplicates(subset=["number"])
-    logger.info(f"duplicate remove shape:  {df.shape}")
+        (~df.firstname.isnull())
+        & (~df.lastname.isnull())
+        & (~df.classname.isnull())
+    ]
     records = [UserTable(User(key=-1, **i))
                for i in df.to_dict(orient="records")]
     session.add_all(records)
@@ -462,8 +590,9 @@ async def __import_books_csv(file):
 async def import_books_csv(file: UploadFile = File(...)):
     """import `Book`s from csv file"""
     session = Session()
-    df: pd.DataFrame = pd.read_csv(file.file).replace({np.nan: None})
-    logger.info(f"importing csv with columns:  {df.columns}")
+    df: pd.DataFrame = pd.read_csv(
+        io.StringIO(UnicodeDammit(file.file.read()).unicode_markup)
+    ).replace({np.nan: None})
     logger.info(f"shape:  {df.shape}")
     df = df[
         (~df.title.isnull())
@@ -497,7 +626,7 @@ async def is_borrowed(book_key: int):
 
 @bibler.get("/category", response_model=List[Category])
 async def get_category():
-    """"""
+    """returns a list of all existing categories"""
     session = Session()
     return [Category(**(i.__dict__)) for i in session.query(CategoryTable).all()]
 

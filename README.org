@@ -2,6 +2,13 @@
 
 ## Mandatory
 
+ - [ ] Vorinitialisieren der datenbank
+ - [ ] Benutzer bearbeiten / löschen
+ - [ ] Ausleih frist in Book item view anzeigen wenn Benutzer ausgewählt ist
+ - [ ] Zurückgeben Menu umbenennen
+ - [ ] Löschen funktion für Buch/ Benutzer
+ - [ ] Excel verkackt utf-8 -> anderes encoding benutzen
+ - [ ] Enter drücken nach letzem input feld bei Eingabedialogen sollte speicher buttun action auslösen
 
 
 ## Nice to have
@@ -14,6 +21,13 @@
 
 # DONE
 
+ - [X] Ausleih modal nicht mit haupt filter feld filtern
+ - [X] Ausleih modal in overflow container ändern
+ - [X] Benutzerliste import Funktion
+ - [X] Datum mit deutschen fomating formatieren
+ - [X] Strip function auf input daten anwenden um unnötige spaces zu vermeiden. 
+ - [X] Schlüssel Spalte bei Benutzerliste umbenennen in BenutzerID
+ - [X] Bei dateiexport richtigen dateinamen vergeben damit excel die datei versteht.
  - [X] Fix Key errors with React
  - [X] In der "alle bücher" ansicht kann man auf ausgeliehene bücher 
        klicken und der ausleihen button ist nicht ausgegraut
